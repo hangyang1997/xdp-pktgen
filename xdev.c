@@ -11,19 +11,30 @@
 #include <libbpf.h>
 #include "xutil.h"
 #include <linux/compiler.h>
+#include "xdev.h"
 
-#define XDEV_NB 64
+#define DEFAULT_XDEV_PROG_NAME "xdev_hook"
+#define DEFAULT_XDEV_MAP_NAME "xdev_map"
+
 #define INVALID_UMEM UINT64_MAX
+
+#define u64_to_addr(rp, index) (((__u64*)(rp)->ring)[(index) & ((rp)->n-1)])
+#define ring_to_xdesc(rp, index) ((struct xdp_desc *)(rp)->ring + ((index) & ((rp)->n-1)))
 
 struct dev_map {
 	int map_fd;
-} dev_maps[XDEV_NB];
+} dev_maps;
+#define DEV_MAP_FD(ifindex) (dev_maps.map_fd)
+
+struct xbuf {
+	__u64 addr;
+	unsigned len;
+};
 
 struct xrings {
 	void *ring;
 	unsigned *productor;
 	unsigned *consumer;
-	unsigned cache;
 	unsigned n;
 };
 
@@ -62,7 +73,7 @@ static inline void umem_free(struct xdev *dev, __u64 addr)
 static inline void x_dev_destroy(struct xdev *dev)
 {
 	if (dev->bind) {
-		bpf_map_delete_elem(dev_maps[dev->ifindex].map_fd, &dev->qindex);
+		bpf_map_delete_elem(DEV_MAP_FD(dev->ifindex), &dev->qindex);
 	}
 
 	if (dev->xsk >= 0) {
@@ -89,7 +100,7 @@ static inline struct xdev * x_dev_create (int ifindex, int qindex, unsigned tx_q
 		return NULL;
 	}
 
-	if (dev_maps[ifindex].map_fd <= 0) {
+	if (DEV_MAP_FD(ifindex) < 0) {
 		LOG("ifindex %d not attach xdp socket prog", ifindex);
 		return NULL;
 	}
@@ -117,7 +128,7 @@ static inline struct xdev * x_dev_create (int ifindex, int qindex, unsigned tx_q
 	}
 
 	//init umem
-	dev->n_umem_size = tx_qs + rx_qs;
+	dev->n_umem_size = (tx_qs + rx_qs) * 2;
 	dev->frame_size = frame_size;
 	if (posix_memalign(&dev->umem, getpagesize(), frame_size*dev->n_umem_size)) {
 		LOG("posix_memalign err");
@@ -226,14 +237,183 @@ static inline struct xdev * x_dev_create (int ifindex, int qindex, unsigned tx_q
 	barrier();
 	*dev->rx.productor = dev->rx.n;
 
-	if (bpf_map_update_elem(dev_maps[ifindex].map_fd, &qindex, &dev->xsk, BPF_ANY)) {
+	if (bpf_map_update_elem(DEV_MAP_FD(ifindex), &qindex, &dev->xsk, BPF_ANY)) {
 		LOG("bpf_map_update_elem err");
 		goto err;
 	}
+
+	dev->bind = 1;
 
 	return dev;
 
 err:
 	x_dev_destroy(dev);
 	return NULL;
+}
+
+static inline void x_dev_complete_tx (struct xdev *dev)
+{
+	struct xrings *cr = &dev->cr;
+	unsigned cm, pd;
+
+	cm = *cr->consumer;
+	pd = *cr->productor;
+
+	barrier();
+
+	for (unsigned i = cm; i < pd; ++i) {
+		umem_free(dev, u64_to_addr(cr, i));
+	}
+
+	barrier();
+	*cr->consumer = pd;
+}
+
+static inline int x_dev_tx_burst (struct xdev *dev, struct xbuf *pkts, unsigned npkt)
+{
+	struct xrings *tx = &dev->tx;
+	unsigned cm, pd, n_tx;
+
+	x_dev_complete_tx(dev);
+
+	cm = *tx->consumer;
+	pd = *tx->productor;
+
+	barrier();
+
+	if (pd - cm == tx->n) {
+		LOG("tx queue is full");
+		return 0;
+	}
+
+	n_tx = tx->n - (pd - cm);
+	if (n_tx > npkt) {
+		n_tx = npkt;
+	}
+
+	for (unsigned i = 0; i < n_tx; ++i) {
+		ring_to_xdesc(tx, i+pd)->addr = pkts[i].addr;
+		ring_to_xdesc(tx, i+pd)->len = pkts[i].len;
+	}
+	barrier();
+
+	*tx->productor += n_tx;
+
+	return n_tx;
+}
+
+static inline void x_dev_fill_rx (struct xdev *dev)
+{
+	struct xrings *fr = &dev->fr;
+	unsigned cm, pd, n_fill;
+	__u64 addr;
+
+	cm = *fr->consumer;
+	pd = *fr->productor;
+
+	barrier();
+
+	if (pd - cm == fr->n) {
+		return;
+	}
+
+	n_fill = fr->n - (pd - cm);
+
+	unsigned i = 0;
+	for (; i < n_fill; ++i) {
+		addr = umem_alloc(dev);
+		if (addr == INVALID_UMEM) {
+			break;
+		}
+		u64_to_addr(fr, i+pd) = addr;
+	}
+
+	if (i > 0) {
+		barrier();
+		*fr->productor += i;
+	}
+}
+
+static inline int x_dev_rx_burst(struct xdev *dev, struct xbuf **pkts, unsigned npkt)
+{
+	struct xrings *rx = &dev->rx;
+	unsigned cm, pd, n_rx;
+
+	cm = *rx->consumer;
+	pd = *rx->productor;
+
+	barrier();
+
+	if (pd == cm) {
+		return 0;
+	}
+
+	n_rx = pd - cm;
+	if (n_rx > npkt) {
+		n_rx = npkt;
+	}
+
+	for(int i = 0; i < n_rx; ++i) {
+		pkts[i]->addr = ring_to_xdesc(rx, i+cm)->addr;
+		pkts[i]->len = ring_to_xdesc(rx, i+cm)->len;
+	}
+
+	barrier();
+	*rx->consumer += n_rx;
+
+	x_dev_fill_rx(dev);
+
+	return n_rx;
+}
+
+static inline int x_interface_attach (int n_if, int *ifindexs, const char *xdp_obj_path)
+{
+	struct bpf_object *obj = NULL;
+	struct bpf_program *xdp_prog = NULL;
+	struct bpf_map *map;
+
+	DEV_MAP_FD() = -1;
+
+	obj = bpf_object__open(xdp_obj_path);
+	if (!obj) {
+		LOG("bpf open file %s err, (%s)", xdp_obj_path, strerror(errno));
+		goto err;
+	}
+	xdp_prog = bpf_object__find_program_by_name(obj, DEFAULT_XDEV_PROG_NAME);
+	if (!xdp_prog) {
+		LOG("bpf obj find prog err, prog name %s", DEFAULT_XDEV_PROG_NAME);
+		goto err;
+	}
+	map = bpf_object__find_map_by_name(obj, DEFAULT_XDEV_MAP_NAME);
+	if (!map) {
+		LOG("bpf obj map find err, need map %s", DEFAULT_XDEV_MAP_NAME);
+		goto err;
+	}
+	if (bpf_map__type(map) != BPF_MAP_TYPE_XSKMAP) {
+		LOG("bpf obj map type err , need BPF_MAP_TYPE_XSKMAP");
+		goto err;
+	}
+	if (bpf_object__load(obj)) {
+		LOG("bpf load %s err, (%s)", xdp_obj_path, strerror(errno));
+		goto err;
+	}
+
+	for (int i = 0; i < n_if; ++i) {
+		bpf_xdp_attach(ifindexs[i], bpf_program__fd(xdp_prog), 0, NULL);
+	}
+
+	return 0;
+
+err:
+	if (obj) {
+		bpf_object__close(obj);
+	}
+	return -1;
+}
+
+static inline void x_interface_detach(int n_if, int *ifindexs)
+{
+	for (int i = 0; i < n_if; ++i) {
+		bpf_xdp_detach(ifindexs[i], 0, NULL);
+	}
 }
