@@ -6,7 +6,7 @@ struct {
 	__uint(key_size, sizeof(int));
 	__uint(value_size, sizeof(int));
 	__uint(max_entries, 64); // max queue size 64
-} xdev_map;
+} xdev_map SEC(".maps");
 
 SEC("xdp")
 int xdev_hook (struct xdp_md *ctx)
@@ -18,3 +18,5 @@ int xdev_hook (struct xdp_md *ctx)
 
 	return XDP_PASS;
 }
+
+char _license[] SEC("license") = "GPL";

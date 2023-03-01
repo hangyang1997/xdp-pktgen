@@ -4,13 +4,12 @@
 #include <unistd.h>
 #include <errno.h>
 #include <sys/socket.h>
-#include <sys/types.h>
 #include <sys/mman.h>
 #include <linux/if_xdp.h>
 #include <bpf.h>
 #include <libbpf.h>
-#include "xutil.h"
 #include <linux/compiler.h>
+#include "xutil.h"
 #include "xdev.h"
 
 #define DEFAULT_XDEV_PROG_NAME "xdev_hook"
@@ -25,11 +24,6 @@ struct dev_map {
 	int map_fd;
 } dev_maps;
 #define DEV_MAP_FD(ifindex) (dev_maps.map_fd)
-
-struct xbuf {
-	__u64 addr;
-	unsigned len;
-};
 
 struct xrings {
 	void *ring;
@@ -56,7 +50,7 @@ struct xdev {
 	struct xrings fr;
 };
 
-static inline __u64 umem_alloc(struct xdev *dev)
+__u64 x_umem_alloc(struct xdev *dev)
 {
 	if (dev->n_umem_free == 0) {
 		return INVALID_UMEM;
@@ -65,12 +59,12 @@ static inline __u64 umem_alloc(struct xdev *dev)
 	return dev->umem_alloc_buffer[--dev->n_umem_free];
 }
 
-static inline void umem_free(struct xdev *dev, __u64 addr)
+void x_umem_free(struct xdev *dev, __u64 addr)
 {
 	dev->umem_alloc_buffer[dev->n_umem_free++] = addr;
 }
 
-static inline void x_dev_destroy(struct xdev *dev)
+void x_dev_destroy(struct xdev *dev)
 {
 	if (dev->bind) {
 		bpf_map_delete_elem(DEV_MAP_FD(dev->ifindex), &dev->qindex);
@@ -84,12 +78,11 @@ static inline void x_dev_destroy(struct xdev *dev)
 	XFREE(dev);
 }
 
-static inline struct xdev * x_dev_create (int ifindex, int qindex, unsigned tx_qs, unsigned rx_qs, unsigned frame_size)
+struct xdev * x_dev_create (int ifindex, int qindex, unsigned tx_qs, unsigned rx_qs, unsigned frame_size)
 {
 	struct xdp_umem_reg umem_reg;
 	struct xdp_mmap_offsets offs;
 	struct sockaddr_xdp sxdp;
-	struct xdp_desc *xdesc;
 	struct xdev *dev;
 	unsigned sko_value;
 	socklen_t sko_len;
@@ -105,8 +98,10 @@ static inline struct xdev * x_dev_create (int ifindex, int qindex, unsigned tx_q
 		return NULL;
 	}
 
-	dev = XALLOC(sizeof(struct xdev));
+	rx_qs = x_align32pow2(rx_qs);
+	tx_qs = x_align32pow2(tx_qs);
 
+	dev = XALLOC(sizeof(struct xdev));
 	dev->xsk = socket (AF_XDP, SOCK_RAW, 0);
 	if (dev->xsk < 0) {
 		LOG("socket err %s", strerror(errno));
@@ -228,14 +223,12 @@ static inline struct xdev * x_dev_create (int ifindex, int qindex, unsigned tx_q
 		goto err;
 	}
 
-	// init rx ring
-	xdesc = (struct xdp_desc*)dev->rx.ring;
-	for (int i = 0; i < dev->rx.n; ++i) {
-		xdesc->addr = umem_alloc(dev);
-		xdesc->len = dev->frame_size;
+	// init fr ring
+	for (int i = 0; i < dev->fr.n; ++i) {
+		u64_to_addr(&dev->fr, i) = x_umem_alloc(dev);
 	}
 	barrier();
-	*dev->rx.productor = dev->rx.n;
+	*dev->fr.productor = dev->fr.n;
 
 	if (bpf_map_update_elem(DEV_MAP_FD(ifindex), &qindex, &dev->xsk, BPF_ANY)) {
 		LOG("bpf_map_update_elem err");
@@ -251,7 +244,7 @@ err:
 	return NULL;
 }
 
-static inline void x_dev_complete_tx (struct xdev *dev)
+void x_dev_complete_tx (struct xdev *dev)
 {
 	struct xrings *cr = &dev->cr;
 	unsigned cm, pd;
@@ -262,14 +255,14 @@ static inline void x_dev_complete_tx (struct xdev *dev)
 	barrier();
 
 	for (unsigned i = cm; i < pd; ++i) {
-		umem_free(dev, u64_to_addr(cr, i));
+		x_umem_free(dev, u64_to_addr(cr, i));
 	}
 
 	barrier();
 	*cr->consumer = pd;
 }
 
-static inline int x_dev_tx_burst (struct xdev *dev, struct xbuf *pkts, unsigned npkt)
+int x_dev_tx_burst (struct xdev *dev, struct xbuf *pkts, unsigned npkt)
 {
 	struct xrings *tx = &dev->tx;
 	unsigned cm, pd, n_tx;
@@ -296,13 +289,15 @@ static inline int x_dev_tx_burst (struct xdev *dev, struct xbuf *pkts, unsigned 
 		ring_to_xdesc(tx, i+pd)->len = pkts[i].len;
 	}
 	barrier();
-
 	*tx->productor += n_tx;
+
+	// Can be omitted in the new version
+	sendto(dev->xsk, NULL, 0, MSG_DONTWAIT, NULL, 0);
 
 	return n_tx;
 }
 
-static inline void x_dev_fill_rx (struct xdev *dev)
+void x_dev_fill_rx (struct xdev *dev)
 {
 	struct xrings *fr = &dev->fr;
 	unsigned cm, pd, n_fill;
@@ -321,7 +316,7 @@ static inline void x_dev_fill_rx (struct xdev *dev)
 
 	unsigned i = 0;
 	for (; i < n_fill; ++i) {
-		addr = umem_alloc(dev);
+		addr = x_umem_alloc(dev);
 		if (addr == INVALID_UMEM) {
 			break;
 		}
@@ -334,7 +329,7 @@ static inline void x_dev_fill_rx (struct xdev *dev)
 	}
 }
 
-static inline int x_dev_rx_burst(struct xdev *dev, struct xbuf **pkts, unsigned npkt)
+int x_dev_rx_burst(struct xdev *dev, struct xbuf *pkts, unsigned npkt)
 {
 	struct xrings *rx = &dev->rx;
 	unsigned cm, pd, n_rx;
@@ -349,13 +344,14 @@ static inline int x_dev_rx_burst(struct xdev *dev, struct xbuf **pkts, unsigned 
 	}
 
 	n_rx = pd - cm;
+	LOG("cm %u pd %u", cm, pd);
 	if (n_rx > npkt) {
 		n_rx = npkt;
 	}
 
 	for(int i = 0; i < n_rx; ++i) {
-		pkts[i]->addr = ring_to_xdesc(rx, i+cm)->addr;
-		pkts[i]->len = ring_to_xdesc(rx, i+cm)->len;
+		pkts[i].addr = ring_to_xdesc(rx, i+cm)->addr;
+		pkts[i].len = ring_to_xdesc(rx, i+cm)->len;
 	}
 
 	barrier();
@@ -366,7 +362,7 @@ static inline int x_dev_rx_burst(struct xdev *dev, struct xbuf **pkts, unsigned 
 	return n_rx;
 }
 
-static inline int x_interface_attach (int n_if, int *ifindexs, const char *xdp_obj_path)
+int x_interface_attach (int n_if, int *ifindexs, const char *xdp_obj_path)
 {
 	struct bpf_object *obj = NULL;
 	struct bpf_program *xdp_prog = NULL;
@@ -398,6 +394,8 @@ static inline int x_interface_attach (int n_if, int *ifindexs, const char *xdp_o
 		goto err;
 	}
 
+	DEV_MAP_FD() = bpf_map__fd(map);
+
 	for (int i = 0; i < n_if; ++i) {
 		bpf_xdp_attach(ifindexs[i], bpf_program__fd(xdp_prog), 0, NULL);
 	}
@@ -411,7 +409,7 @@ err:
 	return -1;
 }
 
-static inline void x_interface_detach(int n_if, int *ifindexs)
+void x_interface_detach(int n_if, int *ifindexs)
 {
 	for (int i = 0; i < n_if; ++i) {
 		bpf_xdp_detach(ifindexs[i], 0, NULL);

@@ -3,6 +3,7 @@
 
 #include <malloc.h>
 #include <stdlib.h>
+#include <linux/types.h>
 #include "xlog.h"
 
 #define CONST_PTR_TO_PTR(cptr) ({ \
@@ -56,5 +57,18 @@
 	void *ptr = CONST_PTR_TO_PTR(cptr); \
 	XFREE_PTR(ptr); \
 } while(0)
+
+static inline __u32
+x_align32pow2(__u32 x)
+{
+	x--;
+	x |= x >> 1;
+	x |= x >> 2;
+	x |= x >> 4;
+	x |= x >> 8;
+	x |= x >> 16;
+
+	return x + 1;
+}
 
 #endif

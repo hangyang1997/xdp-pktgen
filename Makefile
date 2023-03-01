@@ -4,15 +4,21 @@ CC ?= gcc
 LLC ?= llc
 CLANG ?= clang
 
-OBJS := xdev.o
+OBJS := xdev.o xpktgen.o
 KOBJS := xdev_kernel.o
 
-CFLAGS = -I./libbpf/src -I./libbpf/include -g -O2 -Werror -Wall
-BPF_CFLAGS += -I./libbpf/src
+LIBBPF = ./libbpf/src
+
+CFLAGS = -I$(LIBBPF) -I$(LIBBPF)/../include -g -O0 -Werror -Wall
+BPF_CFLAGS += -I$(LIBBPF)
+LDFLAGS += -L$(LIBBPF) -l:libbpf.a -lelf -lz
 
 .PHONY : xpktgen llvm-check $(CLANG) $(LLC) clean
 
-xpktgen: $(KOBJS) llvm-check $(OBJS)
+xpktgen: $(KOBJS) llvm-check xpkt
+
+xpkt: $(OBJS)
+	$(CC) -o $@ $^ $(LDFLAGS)
 
 %o.%c:
 	$(CC) $(CFLAGS) -c -o $@ $<
@@ -41,3 +47,4 @@ llvm-check: $(CLANG) $(LLC)
 clean:
 	rm -f *.ll
 	rm -f *.o
+	rm -f xpkt
