@@ -2,6 +2,9 @@
 #define __XDEV_H
 
 #include <linux/types.h>
+#include <stdint.h>
+
+#define INVALID_UMEM UINT64_MAX
 
 struct xdev;
 
@@ -24,5 +27,7 @@ int x_dev_rx_burst(struct xdev *dev, struct xbuf *pkts, unsigned npkt);
 
 int x_interface_attach (int n_if, int *ifindexs, const char *xdp_obj_path);
 void x_interface_detach(int n_if, int *ifindexs);
+
+void * x_umem_address(struct xdev *dev, __u64 addr);
 
 #endif

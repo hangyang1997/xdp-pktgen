@@ -4,14 +4,14 @@ CC ?= gcc
 LLC ?= llc
 CLANG ?= clang
 
-OBJS := xdev.o xpktgen.o
+OBJS := xdev.o xpktgen.o xudp.o
 KOBJS := xdev_kernel.o
 
 LIBBPF = ./libbpf/src
 
-CFLAGS = -I$(LIBBPF) -I$(LIBBPF)/../include -g -O0 -Werror -Wall
+CFLAGS = -I$(LIBBPF) -g -O0 -Werror -Wall
 BPF_CFLAGS += -I$(LIBBPF)
-LDFLAGS += -L$(LIBBPF) -l:libbpf.a -lelf -lz
+LDFLAGS += -L$(LIBBPF) -l:libbpf.a -lelf -lz -lpcap
 
 .PHONY : xpktgen llvm-check $(CLANG) $(LLC) clean
 

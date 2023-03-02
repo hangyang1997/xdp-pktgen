@@ -71,4 +71,6 @@ x_align32pow2(__u32 x)
 	return x + 1;
 }
 
+#define barrier()	asm volatile("" ::: "memory")
+
 #endif

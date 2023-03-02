@@ -8,14 +8,11 @@
 #include <linux/if_xdp.h>
 #include <bpf.h>
 #include <libbpf.h>
-#include <linux/compiler.h>
 #include "xutil.h"
 #include "xdev.h"
 
 #define DEFAULT_XDEV_PROG_NAME "xdev_hook"
 #define DEFAULT_XDEV_MAP_NAME "xdev_map"
-
-#define INVALID_UMEM UINT64_MAX
 
 #define u64_to_addr(rp, index) (((__u64*)(rp)->ring)[(index) & ((rp)->n-1)])
 #define ring_to_xdesc(rp, index) ((struct xdp_desc *)(rp)->ring + ((index) & ((rp)->n-1)))
@@ -176,9 +173,9 @@ struct xdev * x_dev_create (int ifindex, int qindex, unsigned tx_qs, unsigned rx
 		LOG("mmap rx ring err, (%s)", strerror(errno));
 		goto err;
 	}
-	dev->rx.ring = (char *)ring_map + offs.rx.desc;
-	dev->rx.consumer = (unsigned*)((char*)ring_map + offs.rx.consumer);
-	dev->rx.productor = (unsigned*)((char*)ring_map + offs.rx.producer);
+	dev->rx.ring = ring_map + offs.rx.desc;
+	dev->rx.consumer = ring_map + offs.rx.consumer;
+	dev->rx.productor = ring_map + offs.rx.producer;
 
 	// get tx ring addr
 	ring_map = mmap(NULL, offs.tx.desc+tx_qs*sizeof(struct xdp_desc), 
@@ -187,20 +184,20 @@ struct xdev * x_dev_create (int ifindex, int qindex, unsigned tx_qs, unsigned rx
 		LOG("mmap tx ring err, (%s)", strerror(errno));
 		goto err;
 	}
-	dev->tx.ring = (char *)ring_map + offs.tx.desc;
-	dev->tx.consumer = (unsigned*)((char*)ring_map + offs.tx.consumer);
-	dev->tx.productor = (unsigned*)((char*)ring_map + offs.tx.producer);
+	dev->tx.ring = ring_map + offs.tx.desc;
+	dev->tx.consumer = ring_map + offs.tx.consumer;
+	dev->tx.productor = ring_map + offs.tx.producer;
 
 	// get cr ring addr
-	ring_map = mmap(NULL, offs.cr.desc+tx_qs*sizeof(__u64), 
+	ring_map = mmap(NULL, offs.cr.desc+tx_qs*sizeof(__u64),
 		PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, dev->xsk, XDP_UMEM_PGOFF_COMPLETION_RING);
 	if (ring_map == MAP_FAILED) {
 		LOG("mmap cr ring err, (%s)", strerror(errno));
 		goto err;
 	}
-	dev->cr.ring = (char *)ring_map + offs.cr.desc;
-	dev->cr.consumer = (unsigned*)((char*)ring_map + offs.cr.consumer);
-	dev->cr.productor = (unsigned*)((char*)ring_map + offs.cr.producer);
+	dev->cr.ring = ring_map + offs.cr.desc;
+	dev->cr.consumer = ring_map + offs.cr.consumer;
+	dev->cr.productor = ring_map + offs.cr.producer;
 
 	// get fr ring addr
 	ring_map = mmap(NULL, offs.fr.desc+rx_qs*sizeof(__u64), 
@@ -209,9 +206,9 @@ struct xdev * x_dev_create (int ifindex, int qindex, unsigned tx_qs, unsigned rx
 		LOG("mmap fr ring err, (%s)", strerror(errno));
 		goto err;
 	}
-	dev->fr.ring = (char *)ring_map + offs.fr.desc;
-	dev->fr.consumer = (unsigned*)((char*)ring_map + offs.fr.consumer);
-	dev->fr.productor = (unsigned*)((char*)ring_map + offs.fr.producer);
+	dev->fr.ring = ring_map + offs.fr.desc;
+	dev->fr.consumer = ring_map + offs.fr.consumer;
+	dev->fr.productor = ring_map + offs.fr.producer;
 
 	sxdp.sxdp_family = AF_XDP;
 	sxdp.sxdp_ifindex = ifindex;
@@ -275,7 +272,8 @@ int x_dev_tx_burst (struct xdev *dev, struct xbuf *pkts, unsigned npkt)
 	barrier();
 
 	if (pd - cm == tx->n) {
-		LOG("tx queue is full");
+		// LOG("tx queue is full");
+		sendto(dev->xsk, NULL, 0, MSG_DONTWAIT, NULL, 0);
 		return 0;
 	}
 
@@ -344,7 +342,6 @@ int x_dev_rx_burst(struct xdev *dev, struct xbuf *pkts, unsigned npkt)
 	}
 
 	n_rx = pd - cm;
-	LOG("cm %u pd %u", cm, pd);
 	if (n_rx > npkt) {
 		n_rx = npkt;
 	}
@@ -414,4 +411,9 @@ void x_interface_detach(int n_if, int *ifindexs)
 	for (int i = 0; i < n_if; ++i) {
 		bpf_xdp_detach(ifindexs[i], 0, NULL);
 	}
+}
+
+void * x_umem_address(struct xdev *dev, __u64 addr)
+{
+	return dev->umem + addr;
 }
