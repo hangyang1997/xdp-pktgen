@@ -10,47 +10,6 @@
 #include "xdev.h"
 #include "xpkt.h"
 
-static inline uint32_t
-__ip_cksum(const void *buf, size_t len)
-{
-	uint32_t sum = 0;
-	/* workaround gcc strict-aliasing warning */
-	uintptr_t ptr = (uintptr_t)buf;
-	typedef uint16_t __attribute__((__may_alias__)) u16_p;
-	const u16_p *u16_buf = (const u16_p *)ptr;
-
-	while (len >= (sizeof(*u16_buf) * 4)) {
-		sum += u16_buf[0];
-		sum += u16_buf[1];
-		sum += u16_buf[2];
-		sum += u16_buf[3];
-		len -= sizeof(*u16_buf) * 4;
-		u16_buf += 4;
-	}
-	while (len >= sizeof(*u16_buf)) {
-		sum += *u16_buf;
-		len -= sizeof(*u16_buf);
-		u16_buf += 1;
-	}
-
-	/* if length is in odd bytes */
-	if (len == 1)
-		sum += *((const uint8_t *)u16_buf);
-
-	sum = ((sum & 0xffff0000) >> 16) + (sum & 0xffff);
-	sum = ((sum & 0xffff0000) >> 16) + (sum & 0xffff);
-
-	return (uint16_t)~sum;
-}
-
-static inline void __data_build (void *buf, unsigned len)
-{
-	char* data = buf;
-
-	for (unsigned i = 0; i < len; ++i) {
-		data[i] = '0' + (i & 42);
-	}
-}
 
 int x_udp_builder (struct xdev *dev, struct xudp *uinfo, struct xbuf *buf)
 {
