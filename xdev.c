@@ -417,3 +417,21 @@ void * x_umem_address(struct xdev *dev, __u64 addr)
 {
 	return dev->umem + addr;
 }
+
+int x_dev_status_get(struct xdev *dev, struct xdev_status *status)
+{
+	struct xdp_statistics stats;
+	socklen_t len = sizeof(stats);
+
+	if (getsockopt(dev->xsk, SOL_XDP, XDP_STATISTICS, &stats, &len)) {
+		LOG("getsockopt err (%s)", strerror(errno));
+		return -1;
+	}
+
+	status->rx_drop = stats.rx_dropped;
+	status->rx_invalid_descs = stats.rx_invalid_descs;
+	status->tx_invalid_descs = stats.tx_invalid_descs;
+	status->rx_ring_full = stats.rx_ring_full;
+
+	return 0;
+}

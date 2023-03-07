@@ -11,7 +11,7 @@ LIBBPF = ./libbpf/src
 
 CFLAGS = -I$(LIBBPF) -g -O0 -Werror -Wall
 BPF_CFLAGS += -I$(LIBBPF)
-LDFLAGS += -L$(LIBBPF) -l:libbpf.a -lelf -lz -lpcap
+LDFLAGS += -L$(LIBBPF) -l:libbpf.a -lelf -lz -lpcap -lpthread
 
 .PHONY : xpktgen llvm-check $(CLANG) $(LLC) clean
 

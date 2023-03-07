@@ -57,6 +57,7 @@ static inline void __data_build (void *buf, unsigned len)
 	while (len >= 4) {
 		*u32_data = data;
 		u32_data++;
+		len -= 4;
 	}
 
 	char *ucdata = (char*)u32_data;

@@ -78,4 +78,24 @@ x_align32pow2(__u32 x)
 
 #define barrier()	asm volatile("" ::: "memory")
 
+#ifndef unlikely
+#define unlikely(X) __builtin_expect(!!(X), 0)
+#endif
+
+#ifndef likely
+#define likely(X) __builtin_expect(!!(X), 1)
+#endif
+
+
+#define __SWAP_N(X, Y) do {		\
+	X = (X) ^ (Y);				\
+	Y = (X) ^ (Y);				\
+	X = (X) ^ (Y);				\
+} while(0)
+
+#define SWAP8(X, Y) __SWAP_N(X, Y)
+#define SWAP16(X, Y) __SWAP_N(X, Y)
+#define SWAP32(X, Y) __SWAP_N(X, Y)
+#define SWAP_PTR(X, Y) __SWAP_N((uintptr_t)(X), (uintptr_t)(Y))
+
 #endif
