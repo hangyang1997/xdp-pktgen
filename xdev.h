@@ -5,6 +5,10 @@
 #include <stdint.h>
 
 #define INVALID_UMEM UINT64_MAX
+#define DEV_INDEX_MAX 64
+
+#define DEV_MAX_QUEUE_SIZE 4096
+#define DEV_MAX_FRAME_SIZE 8192
 
 struct xdev;
 
@@ -32,8 +36,8 @@ void x_dev_fill_rx (struct xdev *dev);
 int x_dev_tx_burst(struct xdev *dev, struct xbuf *pkts, unsigned npkt);
 int x_dev_rx_burst(struct xdev *dev, struct xbuf *pkts, unsigned npkt);
 
-int x_interface_attach (int n_if, int *ifindexs, const char *xdp_obj_path);
-void x_interface_detach(int n_if, int *ifindexs);
+int x_interface_attach (int ifindex, const char *xdp_obj_path);
+void x_interface_detach(int ifindex);
 
 void * x_umem_address(struct xdev *dev, __u64 addr);
 

@@ -17,10 +17,14 @@
 #define u64_to_addr(rp, index) (((__u64*)(rp)->ring)[(index) & ((rp)->n-1)])
 #define ring_to_xdesc(rp, index) ((struct xdp_desc *)(rp)->ring + ((index) & ((rp)->n-1)))
 
-struct dev_map {
+static struct dev_map {
+	int xdp_prog;
 	int map_fd;
-} dev_maps;
+	unsigned refcnt[DEV_INDEX_MAX];
+} dev_maps = {-1, -1, {0}};
 #define DEV_MAP_FD(ifindex) (dev_maps.map_fd)
+#define DEV_REF(ifindex) (dev_maps.refcnt[ifindex])
+#define DEV_PROG(ifindex) (dev_maps.xdp_prog)
 
 struct xrings {
 	void *ring;
@@ -72,6 +76,7 @@ void x_dev_destroy(struct xdev *dev)
 	}
 	XFREE(dev->umem);
 	XFREE(dev->umem_alloc_buffer);
+	DEV_REF(dev->ifindex)--;
 	XFREE(dev);
 }
 
@@ -85,13 +90,16 @@ struct xdev * x_dev_create (int ifindex, int qindex, unsigned tx_qs, unsigned rx
 	socklen_t sko_len;
 	void *ring_map;
 
-	if (frame_size == 0 || (rx_qs == 0 && tx_qs == 0)) {
+	if (frame_size == 0 || frame_size > DEV_MAX_FRAME_SIZE
+		|| (rx_qs == 0 && tx_qs == 0)
+		|| rx_qs > DEV_MAX_QUEUE_SIZE
+		|| tx_qs > DEV_MAX_QUEUE_SIZE) {
 		LOG("invalid param");
 		return NULL;
 	}
 
 	if (DEV_MAP_FD(ifindex) < 0) {
-		LOG("ifindex %d not attach xdp socket prog", ifindex);
+		LOG("Not attach any xdp socket prog");
 		return NULL;
 	}
 
@@ -233,6 +241,7 @@ struct xdev * x_dev_create (int ifindex, int qindex, unsigned tx_qs, unsigned rx
 	}
 
 	dev->bind = 1;
+	DEV_REF(ifindex)++;
 
 	return dev;
 
@@ -359,13 +368,19 @@ int x_dev_rx_burst(struct xdev *dev, struct xbuf *pkts, unsigned npkt)
 	return n_rx;
 }
 
-int x_interface_attach (int n_if, int *ifindexs, const char *xdp_obj_path)
+int x_interface_attach (int ifindex, const char *xdp_obj_path)
 {
 	struct bpf_object *obj = NULL;
 	struct bpf_program *xdp_prog = NULL;
 	struct bpf_map *map;
 
-	DEV_MAP_FD() = -1;
+	if (DEV_MAP_FD() > 0) {
+		if (bpf_xdp_attach (ifindex, DEV_PROG(ifindex), 0, NULL)) {
+			LOG("bpf_xdp_attach err (%s)", strerror(errno));
+			return -1;
+		}
+		return 0;
+	}
 
 	obj = bpf_object__open(xdp_obj_path);
 	if (!obj) {
@@ -377,6 +392,7 @@ int x_interface_attach (int n_if, int *ifindexs, const char *xdp_obj_path)
 		LOG("bpf obj find prog err, prog name %s", DEFAULT_XDEV_PROG_NAME);
 		goto err;
 	}
+
 	map = bpf_object__find_map_by_name(obj, DEFAULT_XDEV_MAP_NAME);
 	if (!map) {
 		LOG("bpf obj map find err, need map %s", DEFAULT_XDEV_MAP_NAME);
@@ -386,15 +402,18 @@ int x_interface_attach (int n_if, int *ifindexs, const char *xdp_obj_path)
 		LOG("bpf obj map type err , need BPF_MAP_TYPE_XSKMAP");
 		goto err;
 	}
+
 	if (bpf_object__load(obj)) {
 		LOG("bpf load %s err, (%s)", xdp_obj_path, strerror(errno));
 		goto err;
 	}
 
-	DEV_MAP_FD() = bpf_map__fd(map);
+	DEV_MAP_FD(ifindex) = bpf_map__fd(map);
+	DEV_PROG(ifindex) = bpf_program__fd(xdp_prog);
 
-	for (int i = 0; i < n_if; ++i) {
-		bpf_xdp_attach(ifindexs[i], bpf_program__fd(xdp_prog), 0, NULL);
+	if (bpf_xdp_attach (ifindex, DEV_PROG(ifindex), 0, NULL)) {
+		LOG("bpf_xdp_attach err (%s)", strerror(errno));
+		return -1;
 	}
 
 	return 0;
@@ -406,11 +425,13 @@ err:
 	return -1;
 }
 
-void x_interface_detach(int n_if, int *ifindexs)
+void x_interface_detach(int ifindex)
 {
-	for (int i = 0; i < n_if; ++i) {
-		bpf_xdp_detach(ifindexs[i], 0, NULL);
+	if (DEV_REF(ifindex) != 0) {
+		return;
 	}
+
+	bpf_xdp_detach(ifindex, 0, NULL);
 }
 
 void * x_umem_address(struct xdev *dev, __u64 addr)

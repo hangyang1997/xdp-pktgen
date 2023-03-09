@@ -1,6 +1,10 @@
 #ifndef __XPKT_H
 #define __XPKT_H
 
+#define PKT_MAX_DATA_LEN 1400
+#define PKT_MIN_DATA_LEN 16
+#define PKT_DEFAULT_DATA_LEN 64
+
 struct xudp {
 	__u8 smac[6];
 	__u8 dmac[6];

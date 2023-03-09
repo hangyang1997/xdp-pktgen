@@ -21,19 +21,21 @@
 #define DEFAULT_XDEV_QUEUE_SIZE 2048
 #define DEFAULT_XDEV_FRAME_SIZE 2048
 #define MAX_QUEUEID 64
+#define DEFAULT_DATA_LEN 64
 #define DEFAULT_XDEV_XOBJ "xdev_kernel.o"
 
 struct xstatus {
-	volatile __u64 pkt_send;
-	volatile __u64 pkt_recv;
-	volatile __u64 pkt_tx_drop;
-	volatile __u64 pkt_rx_drop;
+	__u64 pkt_send;
+	__u64 pkt_recv;
+	__u64 pkt_tx_invalid_desc;
+	__u64 pkt_rx_drop;
 } status;
 
 struct xthread {
 	pthread_t thread;
 	struct xdev *dev;
 	__u8 queue_id;
+	__u8 ifindex;
 	__u8 core_id;
 	__u8 dead;
 };
@@ -48,6 +50,8 @@ struct config {
 	__u8 queue_core_id[MAX_QUEUEID];
 	int nqueue;
 	int ifindex;
+	int time;
+	__u16 data_len;
 	__u8 smac[6];
 	__u8 dmac[6];
 } cfg;
@@ -56,16 +60,19 @@ struct config {
 static const char *doc = "Base XDP packet gen";
 
 static volatile int xpkt_stopping;
+static volatile int xpkt_start;
 
 enum {
 	OPT_SRC = 's',
 	OPT_DST = 'd',
 	OPT_QUEUE = 'q',
+	OPT_LEN = 'l',
 	OPT_SHORTKEY = 128,
 	OPT_DPORT,
 	OPT_IFNAME,
 	OPT_SMAC,
 	OPT_DMAC,
+	OPT_TIME,
 };
 
 enum {
@@ -77,6 +84,8 @@ enum {
 	OPT_IFNAME_BIT,
 	OPT_SMAC_BIT,
 	OPT_DMAC_BIT,
+	OPT_TIME_BIT,
+	OPT_LEN_BIT,
 };
 
 #define OPT_BIT(opt) (1 << opt ## _BIT)
@@ -96,12 +105,14 @@ static __u64 arg_cache;
 static struct argp_option options[] = {
 	{"src",  's', "IP-Range",      0,  "IP range [required] x.x.x.x-x.x.x.x" },
 	{"dst",  'd', "IP", 0, "Dest address [required] x.x.x.x"},
-	{"queue-id", 'q', "NUMBER:NUMBER", 0,
+	{"queue-id", 'q', "NUM:NUM", 0,
 		"Correspondence between NIC queue and CPU Core, exp: 0:1,1:2 [required] N:N,N:N..."},
 	{"dport", OPT_DPORT, "PORT", 0, "Destination port [required]"},
 	{"interface", OPT_IFNAME, "IFNAME", 0, "[required]"},
 	{"smac", OPT_SMAC, "MAC", 0, "Source Mac [required] x:x:x:x:x:x"},
 	{"dmac", OPT_DMAC, "MAC", 0, "Dest Mac [required] x:x:x:x:x:x"},
+	{"time", OPT_TIME, "SECOND", 0, "Run time (s)"},
+	{"length", OPT_LEN, "NUM", 0, "Data length [16-1400] Default=64"},
 	{ 0 }
 };
 
@@ -230,6 +241,20 @@ static error_t parse_opt (int key, char *arg, struct argp_state *state)
 				FAIL("error dmac address %s", arg);
 			}
 			break;
+		case OPT_TIME:
+			OPT_BIT_SET(OPT_TIME);
+			cfg.time = atoi(arg);
+			if (cfg.time < 0) {
+				FAIL("error time arg %s", arg);
+			}
+			break;
+		case OPT_LEN:
+			OPT_BIT_SET(OPT_LEN);
+			cfg.data_len = atoi(arg);
+			if (cfg.data_len < PKT_MIN_DATA_LEN || cfg.data_len > PKT_MAX_DATA_LEN) {
+				FAIL("err length arg %s, must in [16, 1400]", arg);
+			}
+			break;
 		default:
 			return ARGP_ERR_UNKNOWN;
 	}
@@ -250,25 +275,48 @@ static void cmd_parse(int argc, char **argv)
 	}
 }
 
-static inline void xdp_status_print(struct xdev *dev)
+static inline void pkt_status_add(struct xstatus *s1, struct xstatus *s2)
 {
-	struct xdev_status status;
+	s1->pkt_recv += s2->pkt_recv;
+	s1->pkt_rx_drop += s2->pkt_rx_drop;
+	s1->pkt_send += s2->pkt_send;
+	s1->pkt_tx_invalid_desc += s2->pkt_tx_invalid_desc;
+}
 
-	x_dev_status_get(dev, &status);
+static inline void xdp_status_print(struct xstatus *xs)
+{
+	fprintf(stdout, "Xpktgen ifname %s:\n", cfg.ifname);
+	fprintf(stdout, "tx               : %llu\n", xs->pkt_send);
+	fprintf(stdout, "rx               : %llu\n", xs->pkt_recv);
+	fprintf(stdout, "rx drop          : %llu\n", xs->pkt_rx_drop);
+	fprintf(stdout, "tx invalid descs : %llu\n", xs->pkt_tx_invalid_desc);
+}
 
-	fprintf(stdout, "tx invalid descs %llu\n", status.tx_invalid_descs);
+static inline void 	xdp_time_print(__u64 sec)
+{
+	unsigned h, m, s;
+
+	h = sec / 3600;
+	m = sec % 3600;
+	s = m % 60;
+	m = m / 60;
+
+	fprintf(stdout, "Time consuming %uh:%um:%us :\n", h, m, s);
 }
 
 static void * xpkt_launch(void* arg)
 {
 	struct xthread *xth;
+	struct xstatus *xs;
 	struct xdev *dev;
+	struct xdev_status dev_status;
 	cpu_set_t cps;
 	struct xudp udp;
-	struct xbuf buf;
+	struct xbuf buf[64];
 	unsigned loops;
 	__u32 src;
 	__u32 ip_mask;
+	__u8 ntx;
 
 	xth = (struct xthread *)arg;
 	dev = xth->dev;
@@ -276,10 +324,11 @@ static void * xpkt_launch(void* arg)
 	udp.dport = cfg.dport;
 	memcpy(udp.smac, cfg.smac, 6);
 	memcpy(udp.dmac, cfg.dmac, 6);
-	udp.data_len = 10;
+	udp.data_len = cfg.data_len ? : PKT_DEFAULT_DATA_LEN;
 	loops = 1;
 	ip_mask = cfg.src_begin - cfg.src_end;
 	src = cfg.src_begin;
+	ntx = 64;
 
 	CPU_ZERO(&cps);
 	CPU_SET(xth->core_id, &cps);
@@ -287,34 +336,43 @@ static void * xpkt_launch(void* arg)
 		LOG("Set cpu affinity error cpu id %hhu", xth->core_id);
 	}
 
+	while(!xpkt_start);
+	xs = XALLOC(sizeof(struct xstatus));
+
 	while (1) {
+begin:
 		if (unlikely(xpkt_stopping)) {
 			break;
 		}
 
-		udp.sport = htons(loops & UINT16_MAX);
-		udp.saddr = src;
+		for (int i = 0 ; i < ntx; ++i) {
+			udp.sport = htons(loops & UINT16_MAX);
+			udp.saddr = src;
 
-		x_udp_builder(dev, &udp, &buf);
-		if (buf.addr == INVALID_UMEM) {
-			sleep(0);
-			x_dev_complete_tx(dev);
-			continue;
+			x_udp_builder(dev, &udp, &buf[i]);
+			if (buf[i].addr == INVALID_UMEM) {
+				sleep(0);
+				x_dev_complete_tx(dev);
+				goto begin;
+			}
+			if (0 == loops % UINT16_MAX) {
+				src = (loops / UINT16_MAX) % ip_mask + cfg.src_begin;
+			}
+			loops++;
 		}
 
-		if (1 != x_dev_tx_burst(dev, &buf, 1)) {
-			x_umem_free(dev, buf.addr);
-			continue;
-		}
-
-		if (0 == loops % UINT16_MAX) {
-			src = (loops / UINT16_MAX) % ip_mask + cfg.src_begin;
-		}
-
-		loops++;
+		ntx = x_dev_tx_burst(dev, buf, 64);
 	}
 
-	return NULL;
+	x_dev_status_get(dev, &dev_status);
+	xs->pkt_send = loops;
+	xs->pkt_rx_drop = dev_status.rx_drop;
+	xs->pkt_tx_invalid_desc = dev_status.tx_invalid_descs;
+
+	x_dev_destroy(dev);
+	x_interface_detach(xth->ifindex);
+
+	return xs;
 }
 
 static void sig_handler (int sig)
@@ -327,12 +385,13 @@ static void sig_handler (int sig)
 	}
 }
 
-
 int main(int argc, char **argv)
 {
 	sigset_t sigs, emptysigs;
 	struct xthread xth[MAX_QUEUEID];
 	struct xthread *pxth;
+	struct xstatus total_status, *th_status;
+	struct timeval tv_start, tv_end;
 	unsigned thread_cnt;
 	int stopped;
 	int nloops_when_stop;
@@ -350,10 +409,11 @@ int main(int argc, char **argv)
 
 	cmd_parse(argc, argv);
 
-	if (x_interface_attach (1, &cfg.ifindex, DEFAULT_XDEV_XOBJ)) {
+	if (x_interface_attach (cfg.ifindex, DEFAULT_XDEV_XOBJ)) {
 		FAIL("interface attach err ifname=%s", cfg.ifname);
 	}
 
+	memset(xth, 0, sizeof(xth));
 	for (int i = 0; i < cfg.nqueue; ++i) {
 		pxth = &xth[i];
 		pxth->dev = x_dev_create(cfg.ifindex, cfg.queue_id[i],
@@ -363,14 +423,25 @@ int main(int argc, char **argv)
 		}
 		pxth->queue_id = cfg.queue_id[i];
 		pxth->core_id = cfg.queue_core_id[i];
+		pxth->ifindex = cfg.ifindex;
 		if (pthread_create(&pxth->thread, NULL, xpkt_launch, pxth)) {
 			FAIL("pthread create err %s\n", strerror(errno));
 		}
 	}
 
+	memset(&total_status, 0, sizeof(total_status));
+	memset(&th_status, 0, sizeof(th_status));
 	stopped = 0;
 	nloops_when_stop = 0;
 	thread_cnt = cfg.nqueue;
+	th_status = NULL;
+
+	gettimeofday(&tv_start, NULL);
+	xpkt_start = 1;
+	if (cfg.time > 0) {
+		alarm(cfg.time);
+	}
+
 	sigemptyset(&emptysigs);
 	while (!stopped && (xpkt_stopping || sigsuspend(&emptysigs) == -1)) {
 		if (xpkt_stopping) {
@@ -380,7 +451,12 @@ int main(int argc, char **argv)
 			if (xth[i].dead) {
 				continue;
 			}
-			if (pthread_tryjoin_np(xth[i].thread, NULL) == 0) {
+			if (pthread_tryjoin_np(xth[i].thread, (void**)&th_status) == 0) {
+				if (th_status) {
+					pkt_status_add(&total_status, th_status);
+				} else {
+					LOG("thread return null status");
+				}
 				xth[i].dead = 1;
 				thread_cnt--;
 			}
@@ -389,12 +465,16 @@ int main(int argc, char **argv)
 				break;
 			}
 		}
-		if (nloops_when_stop > 10) {
-			FAIL("loop count 10 when stop");
+		if (nloops_when_stop > 100) {
+			LOG("loop count 100 when stop");
 			stopped = 1;
 		}
 		sleep(0);
 	}
+
+	gettimeofday(&tv_end, NULL);
+	xdp_time_print(tv_end.tv_sec - tv_start.tv_sec);
+	xdp_status_print(&total_status);
 
 	return 0;
 }

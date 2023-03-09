@@ -17,7 +17,7 @@ int x_udp_builder (struct xdev *dev, struct xudp *uinfo, struct xbuf *buf)
 	struct iphdr *ih;
 	struct udphdr *uh;
 
-	if (uinfo->data_len > 1024) {
+	if (uinfo->data_len > PKT_MAX_DATA_LEN) {
 		return -E2BIG;
 	}
 
