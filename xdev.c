@@ -18,13 +18,11 @@
 #define ring_to_xdesc(rp, index) ((struct xdp_desc *)(rp)->ring + ((index) & ((rp)->n-1)))
 
 static struct dev_map {
-	int xdp_prog;
-	int map_fd;
+	int map_fd[DEV_INDEX_MAX];
 	unsigned refcnt[DEV_INDEX_MAX];
-} dev_maps = {-1, -1, {0}};
-#define DEV_MAP_FD(ifindex) (dev_maps.map_fd)
+} dev_maps = {{-1}, {0}};
+#define DEV_MAP_FD(ifindex) (dev_maps.map_fd[ifindex])
 #define DEV_REF(ifindex) (dev_maps.refcnt[ifindex])
-#define DEV_PROG(ifindex) (dev_maps.xdp_prog)
 
 struct xrings {
 	void *ring;
@@ -374,14 +372,6 @@ int x_interface_attach (int ifindex, const char *xdp_obj_path)
 	struct bpf_program *xdp_prog = NULL;
 	struct bpf_map *map;
 
-	if (DEV_MAP_FD() > 0) {
-		if (bpf_xdp_attach (ifindex, DEV_PROG(ifindex), 0, NULL)) {
-			LOG("bpf_xdp_attach err (%s)", strerror(errno));
-			return -1;
-		}
-		return 0;
-	}
-
 	obj = bpf_object__open(xdp_obj_path);
 	if (!obj) {
 		LOG("bpf open file %s err, (%s)", xdp_obj_path, strerror(errno));
@@ -409,9 +399,8 @@ int x_interface_attach (int ifindex, const char *xdp_obj_path)
 	}
 
 	DEV_MAP_FD(ifindex) = bpf_map__fd(map);
-	DEV_PROG(ifindex) = bpf_program__fd(xdp_prog);
 
-	if (bpf_xdp_attach (ifindex, DEV_PROG(ifindex), 0, NULL)) {
+	if (bpf_xdp_attach (ifindex,  bpf_program__fd(xdp_prog), 0, NULL)) {
 		LOG("bpf_xdp_attach err (%s)", strerror(errno));
 		return -1;
 	}
