@@ -20,8 +20,6 @@
 
 #define DEFAULT_XDEV_QUEUE_SIZE 2048
 #define DEFAULT_XDEV_FRAME_SIZE 2048
-#define MAX_QUEUEID 64
-#define DEFAULT_DATA_LEN 64
 #define DEFAULT_XDEV_XOBJ "xdev_kernel.o"
 
 struct xstatus {
@@ -311,7 +309,7 @@ static void * xpkt_launch(void* arg)
 	struct xdev *dev;
 	struct xdev_status dev_status;
 	cpu_set_t cps;
-	struct xudp udp;
+	struct L4PKT l4info;
 	struct xbuf buf[64];
 	unsigned loops;
 	__u32 src;
@@ -320,11 +318,11 @@ static void * xpkt_launch(void* arg)
 
 	xth = (struct xthread *)arg;
 	dev = xth->dev;
-	udp.daddr = cfg.dest;
-	udp.dport = cfg.dport;
-	memcpy(udp.smac, cfg.smac, 6);
-	memcpy(udp.dmac, cfg.dmac, 6);
-	udp.data_len = cfg.data_len ? : PKT_DEFAULT_DATA_LEN;
+	l4info.daddr = cfg.dest;
+	l4info.dport = cfg.dport;
+	memcpy(l4info.smac, cfg.smac, 6);
+	memcpy(l4info.dmac, cfg.dmac, 6);
+	l4info.data_len = cfg.data_len ? : PKT_DEFAULT_DATA_LEN;
 	loops = 1;
 	ip_mask = cfg.src_begin - cfg.src_end;
 	src = cfg.src_begin;
@@ -346,10 +344,10 @@ begin:
 		}
 
 		for (int i = 0 ; i < ntx; ++i) {
-			udp.sport = htons(loops & UINT16_MAX);
-			udp.saddr = src;
+			l4info.sport = loops & UINT16_MAX;
+			l4info.saddr = src;
 
-			x_udp_builder(dev, &udp, &buf[i]);
+			x_udp_builder(dev, &l4info, &buf[i]);
 			if (buf[i].addr == INVALID_UMEM) {
 				sleep(0);
 				x_dev_complete_tx(dev);

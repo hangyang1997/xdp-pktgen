@@ -11,7 +11,7 @@
 #include "xpkt.h"
 
 
-int x_udp_builder (struct xdev *dev, struct xudp *uinfo, struct xbuf *buf)
+int x_udp_builder (struct xdev *dev, struct L4PKT *uinfo, struct xbuf *buf)
 {
 	struct ethhdr *eh;
 	struct iphdr *ih;

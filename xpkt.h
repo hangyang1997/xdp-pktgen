@@ -5,7 +5,7 @@
 #define PKT_MIN_DATA_LEN 16
 #define PKT_DEFAULT_DATA_LEN 64
 
-struct xudp {
+struct L4PKT {
 	__u8 smac[6];
 	__u8 dmac[6];
 	__u32 saddr;
@@ -70,6 +70,7 @@ static inline void __data_build (void *buf, unsigned len)
 	}
 }
 
-int x_udp_builder (struct xdev *dev, struct xudp *uinfo, struct xbuf *buf);
+int x_udp_builder (struct xdev *dev, struct L4PKT *uinfo, struct xbuf *buf);
+int x_tcp_builder (struct xdev *dev, struct L4PKT *tinfo, struct xbuf *buf);
 
 #endif

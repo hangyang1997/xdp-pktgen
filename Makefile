@@ -4,7 +4,7 @@ CC ?= gcc
 LLC ?= llc
 CLANG ?= clang
 
-OBJS := xdev.o xpktgen.o xudp.o
+OBJS := xdev.o xpktgen.o xudp.o xtcp.o
 KOBJS := xdev_kernel.o
 
 LIBBPF = ./libbpf/src
