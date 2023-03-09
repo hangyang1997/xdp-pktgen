@@ -50,7 +50,6 @@ int x_udp_builder (struct xdev *dev, struct xudp *uinfo, struct xbuf *buf)
 	uh->dest = __cpu_to_be16(uinfo->dport);
 	uh->source = __cpu_to_be16(uinfo->sport);
 	uh->len = __cpu_to_be16(sizeof(*uh) + uinfo->data_len);
-	__data_build(uh + 1, uinfo->data_len);
 
 	return 0;
 }
