@@ -9,7 +9,7 @@ KOBJS := xdev_kernel.o
 
 LIBBPF = ./libbpf/src
 
-CFLAGS = -I$(LIBBPF) -O3 -Werror -Wall
+CFLAGS = -I$(LIBBPF) -g -O0 -Werror -Wall
 BPF_CFLAGS += -I$(LIBBPF)
 LDFLAGS += -L$(LIBBPF) -l:libbpf.a -lelf -lz -lpthread
 

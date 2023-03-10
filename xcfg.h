@@ -16,6 +16,8 @@
 #define PKT_MIN_DATA_LEN 16
 #define PKT_DEFAULT_DATA_LEN 64
 
+#define MAX_PKT_SEND 64
+
 #define DEFAULT_XDEV_XOBJ "xdev_kernel.o"
 
 enum tx_pkt_type {

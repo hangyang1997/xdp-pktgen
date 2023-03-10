@@ -72,7 +72,7 @@ static void * l4_xpkt_launch(void* arg)
 	struct xdev_status dev_status;
 	cpu_set_t cps;
 	struct L4PKT l4info;
-	struct xbuf buf[64];
+	struct xbuf buf[MAX_PKT_SEND];
 	unsigned loops;
 	__u32 src;
 	__u32 ip_mask;
@@ -95,7 +95,7 @@ static void * l4_xpkt_launch(void* arg)
 	loops = 1;
 	ip_mask = cfg.src_begin - cfg.src_end;
 	src = cfg.src_begin;
-	ntx = 64;
+	ntx = MAX_PKT_SEND;
 
 	CPU_ZERO(&cps);
 	CPU_SET(xth->core_id, &cps);
@@ -124,13 +124,13 @@ begin:
 				x_dev_complete_tx(dev);
 				goto begin;
 			}
-			if (0 == loops % UINT16_MAX) {
+			if (0 == loops % UINT16_MAX && ip_mask) {
 				src = (loops / UINT16_MAX) % ip_mask + cfg.src_begin;
 			}
 			loops++;
 		}
 
-		ntx = x_dev_tx_burst(dev, buf, 64);
+		ntx = x_dev_tx_burst(dev, buf, MAX_PKT_SEND);
 	}
 
 	x_dev_status_get(dev, &dev_status);
