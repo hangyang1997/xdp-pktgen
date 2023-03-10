@@ -34,6 +34,9 @@ struct config {
 	__u8 queue_id[MAX_QUEUEID];
 	__u8 queue_core_id[MAX_QUEUEID];
 	int nqueue;
+	__u8 rx_queue_id[MAX_QUEUEID];
+	__u8 rx_queue_core_id[MAX_QUEUEID];
+	int rx_nqueue;
 	int ifindex;
 	int time;
 	__u16 data_len;

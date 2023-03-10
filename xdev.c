@@ -373,6 +373,10 @@ int x_interface_attach (int ifindex, const char *xdp_obj_path)
 	struct bpf_program *xdp_prog = NULL;
 	struct bpf_map *map;
 
+	if (DEV_MAP_FD(ifindex) > 0) {
+		return 0;
+	}
+
 	obj = bpf_object__open(xdp_obj_path);
 	if (!obj) {
 		LOG("bpf open file %s err, (%s)", xdp_obj_path, strerror(errno));

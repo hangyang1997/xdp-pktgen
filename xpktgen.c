@@ -8,6 +8,7 @@
 #include <signal.h>
 #include <sys/types.h>
 #include <sys/time.h>
+#include <sys/queue.h>
 #include <pthread.h>
 #include <errno.h>
 #include "xutil.h"
@@ -23,25 +24,34 @@ struct xstatus {
 	__u64 pkt_rx_drop;
 } status;
 
-struct xthread {
-	pthread_t thread;
+struct xdev_item {
+	LIST_ENTRY(xdev_item) __l;
 	struct xdev *dev;
+	int queue_id;
+	int ifindex;
+};
+
+struct xthread {
+	LIST_ENTRY(xthread) __l;
+	pthread_t thread;
+	struct xdev_item *dev;
 	__u8 queue_id;
 	__u8 ifindex;
 	__u8 core_id;
 	__u8 dead;
+	__u8 read;
+	struct xstatus xs;
 };
 
-static volatile int xpkt_stopping;
-static volatile int xpkt_start;
+static volatile int launch_stopping;
+static volatile int launch_start;
+static LIST_HEAD(, xthread) xpkt_launch_queue;
+static unsigned num_launcher;
 
-static inline void pkt_status_add(struct xstatus *s1, struct xstatus *s2)
-{
-	s1->pkt_recv += s2->pkt_recv;
-	s1->pkt_rx_drop += s2->pkt_rx_drop;
-	s1->pkt_send += s2->pkt_send;
-	s1->pkt_tx_invalid_desc += s2->pkt_tx_invalid_desc;
-}
+static LIST_HEAD(, xdev_item) dev_list;
+
+static struct xstatus total_status;
+static struct timeval start_launch_tv, end_launch_tv;
 
 static inline void xdp_status_print(struct xstatus *xs)
 {
@@ -50,6 +60,14 @@ static inline void xdp_status_print(struct xstatus *xs)
 	fprintf(stdout, "rx               : %llu\n", xs->pkt_recv);
 	fprintf(stdout, "rx drop          : %llu\n", xs->pkt_rx_drop);
 	fprintf(stdout, "tx invalid descs : %llu\n", xs->pkt_tx_invalid_desc);
+}
+
+static inline void pkt_status_add(struct xstatus *s1, struct xstatus *s2)
+{
+	s1->pkt_recv += s2->pkt_recv;
+	s1->pkt_rx_drop += s2->pkt_rx_drop;
+	s1->pkt_send += s2->pkt_send;
+	s1->pkt_tx_invalid_desc += s2->pkt_tx_invalid_desc;
 }
 
 static inline void 	xdp_time_print(__u64 sec)
@@ -64,11 +82,157 @@ static inline void 	xdp_time_print(__u64 sec)
 	fprintf(stdout, "Time consuming %uh:%um:%us :\n", h, m, s);
 }
 
-static void * l4_xpkt_launch(void* arg)
+static void * l4_xpkt_launch(struct xthread *xth);
+
+static inline void * launch_routine(void* arg)
+{
+	return l4_xpkt_launch((struct xthread *)arg);
+}
+
+static inline void xpkt_launch_start (void)
 {
 	struct xthread *xth;
+
+	LIST_FOREACH(xth, &xpkt_launch_queue, __l) {
+		if (pthread_create(&xth->thread, NULL, launch_routine, xth)) {
+			FAIL("pthread create err %s\n", strerror(errno));
+		}
+		xth->dead = 0;
+	}
+
+	launch_start = 1;
+	sleep(0);
+
+	gettimeofday(&start_launch_tv, NULL);
+}
+
+static inline int xpkt_launch_stop (void)
+{
+	struct xthread *xth;
+	unsigned launcher = num_launcher;
+	unsigned loop_count;
+#define MAX_LOOP 100
+
+	if (!launch_stopping || !launch_start) {
+		return 1;
+	}
+
+	loop_count = 0;
+
+	memset(&total_status, 0, sizeof(total_status));
+
+	while (launcher) {
+		loop_count++;
+		LIST_FOREACH(xth, &xpkt_launch_queue, __l) {
+			if (xth->dead) {
+				continue;
+			}
+			if (pthread_tryjoin_np(xth->thread, NULL) == 0) {
+				pkt_status_add(&total_status, &xth->xs);
+				xth->dead = 1;
+				launcher--;
+			}
+		}
+		if (loop_count > MAX_LOOP) {
+			LOG("The process has not exited after looping %u times, and it is forced to exit", MAX_LOOP);
+			break;
+		}
+		sleep(0);
+	}
+#undef MAX_LOOP
+
+	launch_start = 0;
+
+	gettimeofday(&end_launch_tv, NULL);
+	xdp_time_print(end_launch_tv.tv_sec - start_launch_tv.tv_sec);
+	xdp_status_print(&total_status);
+
+	return 0;
+}
+
+static inline struct xthread * xpkt_launch_add (int core_id, struct xdev_item *dev, int read)
+{
+	struct xthread *xth;
+
+	xth = XALLOC(sizeof(struct xthread));
+	xth->core_id = core_id;
+	xth->dev = dev;
+	xth->read = read;
+
+	LIST_INSERT_HEAD(&xpkt_launch_queue, xth, __l);
+	num_launcher++;
+
+	return xth;
+}
+
+static inline void xpkt_launch_clean (void)
+{
+	struct xthread *xth;
+
+	while ((xth = LIST_FIRST(&xpkt_launch_queue)) != NULL) {
+		LIST_REMOVE(xth, __l);
+		XFREE(xth);
+	}
+	num_launcher = 0;
+}
+
+static inline struct xdev_item *dev_create(int ifindex, int queue_id)
+{
+	struct xdev_item *dev;
+
+	LIST_FOREACH(dev, &dev_list, __l) {
+		if (dev->ifindex == ifindex && dev->queue_id == queue_id) {
+			return dev;
+		}
+	}
+
+	if (x_interface_attach (ifindex, DEFAULT_XDEV_XOBJ)) {
+		FAIL("interface attach err ifname=%s", cfg.ifname);
+	}
+
+	dev = XALLOC(sizeof(struct xdev_item));
+	dev->ifindex = ifindex;
+	dev->queue_id = queue_id;
+
+	dev->dev = x_dev_create(ifindex, queue_id,
+		DEFAULT_XDEV_QUEUE_SIZE, DEFAULT_XDEV_QUEUE_SIZE, DEFAULT_XDEV_FRAME_SIZE);
+	if (!dev->dev) {
+		FAIL("dev create err ifindex %d - queue id %d", ifindex, queue_id);
+	}
+
+	return dev;
+}
+
+static inline void dev_destroy(int ifindex, int queue_id)
+{
+	struct xdev_item *dev;
+
+	LIST_FOREACH(dev, &dev_list, __l) {
+		if (dev->ifindex == ifindex && dev->queue_id == queue_id) {
+			LIST_REMOVE(dev, __l);
+			x_dev_destroy(dev->dev);
+			x_interface_detach(dev->ifindex);
+			XFREE(dev);
+		}
+	}
+}
+
+static inline void dev_destroy_all(void)
+{
+	struct xdev_item *dev;
+
+	while ((dev = LIST_FIRST(&dev_list)) != NULL) {
+		LIST_REMOVE(dev, __l);
+		x_dev_destroy(dev->dev);
+		x_interface_detach(dev->ifindex);
+		XFREE(dev);
+	}
+}
+
+static void * l4_xpkt_launch(struct xthread *xth)
+{
 	struct xstatus *xs;
-	struct xdev *dev;
+	struct xdev_item *dev;
 	struct xdev_status dev_status;
 	cpu_set_t cps;
 	struct L4PKT l4info;
@@ -85,7 +249,6 @@ static void * l4_xpkt_launch(void* arg)
 		l4_pkt_builder = x_udp_builder;
 	}
 
-	xth = (struct xthread *)arg;
 	dev = xth->dev;
 	l4info.daddr = cfg.dest;
 	l4info.dport = cfg.dport;
@@ -96,6 +259,8 @@ static void * l4_xpkt_launch(void* arg)
 	ip_mask = cfg.src_begin - cfg.src_end;
 	src = cfg.src_begin;
 	ntx = MAX_PKT_SEND;
+	xs = &xth->xs;
+	memset(xs, 0, sizeof(*xs));
 
 	CPU_ZERO(&cps);
 	CPU_SET(xth->core_id, &cps);
@@ -103,14 +268,12 @@ static void * l4_xpkt_launch(void* arg)
 		LOG("Set cpu affinity error cpu id %hhu", xth->core_id);
 	}
 
-	while(!xpkt_start)
+	while(!launch_start)
 		sleep(0);
-
-	xs = XALLOC(sizeof(struct xstatus));
 
 	while (1) {
 begin:
-		if (unlikely(xpkt_stopping)) {
+		if (unlikely(launch_stopping)) {
 			break;
 		}
 
@@ -118,10 +281,10 @@ begin:
 			l4info.sport = loops & UINT16_MAX;
 			l4info.saddr = src;
 
-			l4_pkt_builder(dev, &l4info, &buf[i]);
+			l4_pkt_builder(dev->dev, &l4info, &buf[i]);
 			if (buf[i].addr == INVALID_UMEM) {
 				sleep(0);
-				x_dev_complete_tx(dev);
+				x_dev_complete_tx(dev->dev);
 				goto begin;
 			}
 			if (0 == loops % UINT16_MAX && ip_mask) {
@@ -130,121 +293,64 @@ begin:
 			loops++;
 		}
 
-		ntx = x_dev_tx_burst(dev, buf, MAX_PKT_SEND);
+		ntx = x_dev_tx_burst(dev->dev, buf, MAX_PKT_SEND);
 	}
 
-	x_dev_status_get(dev, &dev_status);
+	x_dev_status_get(dev->dev, &dev_status);
 	xs->pkt_send = loops;
 	xs->pkt_rx_drop = dev_status.rx_drop;
 	xs->pkt_tx_invalid_desc = dev_status.tx_invalid_descs;
 
-	x_dev_destroy(dev);
-	x_interface_detach(xth->ifindex);
-
-	return xs;
+	return NULL;
 }
 
 static void sig_handler (int sig)
 {
-	if (sig == SIGINT ||
-		sig == SIGTERM
+	if (sig == SIGINT
+		|| sig == SIGTERM
 		|| sig == SIGALRM)
 	{
-		xpkt_stopping = 1;
+		launch_stopping = 1;
 	}
 }
 
 int main(int argc, char **argv)
 {
 	sigset_t sigs, emptysigs;
-	struct xthread xth[MAX_QUEUEID];
-	struct xthread *pxth;
-	struct xstatus total_status, *th_status;
-	struct timeval tv_start, tv_end;
-	unsigned thread_cnt;
-	int stopped;
-	int nloops_when_stop;
+	struct xdev_item *dev;
 
 	signal(SIGINT, sig_handler);
 	signal(SIGTERM, sig_handler);
 	signal(SIGALRM, sig_handler);
+	signal(SIGKILL, sig_handler);
+	signal(SIGQUIT, sig_handler);
 
 	// sigprocmask(SIG_SETMASK, NULL, &sigs);
 	sigemptyset(&sigs);
 	sigaddset(&sigs, SIGINT);
 	sigaddset(&sigs, SIGTERM);
+	sigaddset(&sigs, SIGKILL);
+	sigaddset(&sigs, SIGQUIT);
 	sigaddset(&sigs, SIGALRM);
 	sigprocmask(SIG_BLOCK, &sigs, NULL);
 
 	cmd_parse(argc, argv);
 
-	if (x_interface_attach (cfg.ifindex, DEFAULT_XDEV_XOBJ)) {
-		FAIL("interface attach err ifname=%s", cfg.ifname);
-	}
-
-	memset(xth, 0, sizeof(xth));
 	for (int i = 0; i < cfg.nqueue; ++i) {
-		pxth = &xth[i];
-		pxth->dev = x_dev_create(cfg.ifindex, cfg.queue_id[i],
-			DEFAULT_XDEV_QUEUE_SIZE, DEFAULT_XDEV_QUEUE_SIZE, DEFAULT_XDEV_FRAME_SIZE);
-		if (!pxth->dev) {
-			FAIL("dev create err ifname %s - queue id %d", cfg.ifname, cfg.queue_id[i]);
-		}
-		pxth->queue_id = cfg.queue_id[i];
-		pxth->core_id = cfg.queue_core_id[i];
-		pxth->ifindex = cfg.ifindex;
-		if (pthread_create(&pxth->thread, NULL, l4_xpkt_launch, pxth)) {
-			FAIL("pthread create err %s\n", strerror(errno));
-		}
+		dev = dev_create(cfg.ifindex, cfg.queue_id[i]);
+		xpkt_launch_add(cfg.queue_core_id[i], dev, 0);
 	}
 
-	memset(&total_status, 0, sizeof(total_status));
-	memset(&th_status, 0, sizeof(th_status));
-	stopped = 0;
-	nloops_when_stop = 0;
-	thread_cnt = cfg.nqueue;
-	th_status = NULL;
-
-	gettimeofday(&tv_start, NULL);
-	xpkt_start = 1;
-	sleep(0);
+	xpkt_launch_start();
 	if (cfg.time > 0) {
 		alarm(cfg.time);
 	}
 
 	sigemptyset(&emptysigs);
-	while (!stopped && (xpkt_stopping || sigsuspend(&emptysigs) == -1)) {
-		if (xpkt_stopping) {
-			++nloops_when_stop;
-		}
-		for (int i = 0; i < cfg.nqueue; ++i) {
-			if (xth[i].dead) {
-				continue;
-			}
-			if (pthread_tryjoin_np(xth[i].thread, (void**)&th_status) == 0) {
-				if (th_status) {
-					pkt_status_add(&total_status, th_status);
-				} else {
-					LOG("thread return null status");
-				}
-				xth[i].dead = 1;
-				thread_cnt--;
-			}
-			if (thread_cnt == 0) {
-				stopped = 1;
-				break;
-			}
-		}
-		if (nloops_when_stop > 100) {
-			LOG("loop count 100 when stop");
-			stopped = 1;
-		}
-		sleep(0);
-	}
+	while (sigsuspend(&emptysigs) == -1 && xpkt_launch_stop());
 
-	gettimeofday(&tv_end, NULL);
-	xdp_time_print(tv_end.tv_sec - tv_start.tv_sec);
-	xdp_status_print(&total_status);
+	xpkt_launch_clean();
+	dev_destroy_all();
 
 	return 0;
 }

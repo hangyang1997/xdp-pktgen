@@ -27,6 +27,7 @@ enum {
 	OPT_DMAC,
 	OPT_TIME,
 	OPT_SYN,
+	OPT_RX_QUEUE,
 };
 
 enum {
@@ -41,6 +42,7 @@ enum {
 	OPT_TIME_BIT,
 	OPT_LEN_BIT,
 	OPT_SYN_BIT,
+	OPT_RX_QUEUE_BIT,
 };
 
 #define OPT_BIT(opt) (1 << opt ## _BIT)
@@ -69,6 +71,7 @@ static struct argp_option options[] = {
 	{"time", OPT_TIME, "SECOND", 0, "Run time (s)"},
 	{"length", OPT_LEN, "NUM", 0, "Data length [16-1400] Default=64"},
 	{"syn", OPT_SYN, 0, 0, "Send Tcp SYN, Default UDP"},
+	{"rx-queue", OPT_RX_QUEUE, "NUM:NUM", 0, "Rx queue and CPU core"},
 	{ 0 }
 };
 
@@ -116,11 +119,14 @@ static inline int queue_id_exist (int queue)
 	return 0;
 }
 
-static inline void parse_queue_id (char *string)
+static inline int parse_queue_id (__u8 *queue_id, __u8 *queue_core_id, char *string)
 {
 	__u8 queue, core;
 	__u16 max_core;
 	char *endptr;
+	int nqueue;
+
+	nqueue = 0;
 
 	max_core = get_nprocs_conf();
 	endptr = string;
@@ -142,13 +148,15 @@ static inline void parse_queue_id (char *string)
 			endptr++;
 		}
 		string = endptr;
-		cfg.queue_core_id[cfg.nqueue] = core;
-		cfg.queue_id[cfg.nqueue] = queue;
-		cfg.nqueue++;
-		if (cfg.nqueue >= MAX_QUEUEID) {
+		queue_core_id[nqueue] = core;
+		queue_id[nqueue] = queue;
+		nqueue++;
+		if (nqueue >= MAX_QUEUEID) {
 			break;
 		}
 	}
+
+	return nqueue;
 }
 
 static error_t parse_opt (int key, char *arg, struct argp_state *state)
@@ -174,7 +182,7 @@ static error_t parse_opt (int key, char *arg, struct argp_state *state)
 			OPT_BIT_SET(OPT_DPORT);
 			break;
 		case OPT_QUEUE:
-			parse_queue_id(arg);
+			cfg.nqueue = parse_queue_id(cfg.queue_id, cfg.queue_core_id, arg);
 			OPT_BIT_SET(OPT_QUEUE);
 			break;
 		case OPT_IFNAME:
@@ -214,6 +222,10 @@ static error_t parse_opt (int key, char *arg, struct argp_state *state)
 		case OPT_SYN:
 			OPT_BIT_SET(OPT_SYN);
 			cfg.pkt_type = X_TCP_SYN;
+			break;
+		case OPT_RX_QUEUE:
+			OPT_BIT_SET(OPT_RX_QUEUE);
+			cfg.rx_nqueue = parse_queue_id (cfg.rx_queue_id, cfg.rx_queue_core_id, arg);
 			break;
 		default:
 			return ARGP_ERR_UNKNOWN;
