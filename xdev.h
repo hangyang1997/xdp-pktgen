@@ -5,11 +5,6 @@
 #include <stdint.h>
 
 #define INVALID_UMEM UINT64_MAX
-#define DEV_INDEX_MAX 64
-#define MAX_QUEUEID 64
-
-#define DEV_MAX_QUEUE_SIZE 4096
-#define DEV_MAX_FRAME_SIZE 8192
 
 struct xdev;
 

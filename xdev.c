@@ -10,6 +10,7 @@
 #include <libbpf.h>
 #include "xutil.h"
 #include "xdev.h"
+#include "xcfg.h"
 
 #define DEFAULT_XDEV_PROG_NAME "xdev_hook"
 #define DEFAULT_XDEV_MAP_NAME "xdev_map"

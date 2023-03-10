@@ -4,12 +4,12 @@ CC ?= gcc
 LLC ?= llc
 CLANG ?= clang
 
-OBJS := xdev.o xpktgen.o xudp.o xtcp.o
+OBJS := xdev.o xpktgen.o xudp.o xtcp.o xcfg.o
 KOBJS := xdev_kernel.o
 
 LIBBPF = ./libbpf/src
 
-CFLAGS = -I$(LIBBPF) -g -O0 -Werror -Wall
+CFLAGS = -I$(LIBBPF) -O3 -Werror -Wall
 BPF_CFLAGS += -I$(LIBBPF)
 LDFLAGS += -L$(LIBBPF) -l:libbpf.a -lelf -lz -lpthread
 

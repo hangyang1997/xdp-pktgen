@@ -9,6 +9,7 @@
 #include "xutil.h"
 #include "xdev.h"
 #include "xpkt.h"
+#include "xcfg.h"
 
 static inline __sum16 csum_fold(__wsum csum)
 {
@@ -45,7 +46,7 @@ static inline __sum16 tcp_v4_check(int len, __be32 saddr,
 	return csum_tcpudp_magic(saddr, daddr, len, IPPROTO_TCP, base);
 }
 
-int x_tcp_builder (struct xdev *dev, struct L4PKT *tinfo, struct xbuf *buf)
+int x_tcp_syn_builder (struct xdev *dev, struct L4PKT *tinfo, struct xbuf *buf)
 {
 	struct ethhdr *eh;
 	struct iphdr *ih;
@@ -77,7 +78,7 @@ int x_tcp_builder (struct xdev *dev, struct L4PKT *tinfo, struct xbuf *buf)
 	ih->check = 0;
 	ih->ttl = 64;
 	ih->protocol = IPPROTO_TCP;
-	ih->check = __ip_cksum(ih, ih->ihl);
+	ih->check = __ip_cksum(ih, sizeof(struct iphdr));
 
 	th = (struct tcphdr*)(ih + 1);
 	memset(th, 0, sizeof(struct tcphdr));
@@ -89,7 +90,13 @@ int x_tcp_builder (struct xdev *dev, struct L4PKT *tinfo, struct xbuf *buf)
 	th->syn = 1;
 	th->check = 0;
 	th->doff = sizeof(struct tcphdr) >> 2;
-	// th->check = ~tcp_v4_check(sizeof(struct tcphdr), tinfo->saddr, tinfo->daddr, 0);
+	th->check = tcp_v4_check(sizeof(struct tcphdr), tinfo->saddr, tinfo->daddr,
+		csum_partial(th, sizeof(struct tcphdr), 0));
 
 	return 0;
 }
+
+
+
+
+

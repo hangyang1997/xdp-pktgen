@@ -9,6 +9,7 @@
 #include "xutil.h"
 #include "xdev.h"
 #include "xpkt.h"
+#include "xcfg.h"
 
 
 int x_udp_builder (struct xdev *dev, struct L4PKT *uinfo, struct xbuf *buf)
@@ -43,7 +44,7 @@ int x_udp_builder (struct xdev *dev, struct L4PKT *uinfo, struct xbuf *buf)
 	ih->check = 0;
 	ih->ttl = 64;
 	ih->protocol = IPPROTO_UDP;
-	ih->check = __ip_cksum(ih, ih->ihl);
+	ih->check = __ip_cksum(ih, sizeof(struct iphdr));
 
 	uh = (struct udphdr *)(ih + 1);
 	uh->check = 0;
