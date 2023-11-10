@@ -185,7 +185,7 @@ static void * l4_xpkt_launch(struct task_thread_ctx *ctx)
 	}
 
 	l4info.daddr = task->dest;
-	l4info.dport = task->dport;
+	l4info.dport = ntohs(task->dport);
 	memcpy(l4info.smac, task->smac, 6);
 	memcpy(l4info.dmac, task->dmac, 6);
 	l4info.data_len = task->data_len ? : PKT_DEFAULT_DATA_LEN;

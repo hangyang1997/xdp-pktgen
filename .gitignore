@@ -1,4 +1,6 @@
 .vscode
+xpkt-command.y
+xpkt-keyword.l
 *.o
 *.a
 *.so

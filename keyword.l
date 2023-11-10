@@ -76,10 +76,10 @@ static size_t xcmd_input(char *buffer, size_t max)
 	}
 
 	if (current_task) {
-		snprintf(prompt, sizeof(prompt), "\001\033[32mXPKT(%s-%d)> \033[0m\002", current_task->ifname, current_task->queue_id);
+		snprintf(prompt, sizeof(prompt), "\033[33;3mXPKT(%s-%d)>\033[0m ", current_task->ifname, current_task->queue_id);
 		line = readline(prompt);
 	} else {
-		line = readline("\001\033[32mXPKT> \033[0m\002");
+		line  = readline("\033[3mXPKT>\033[0m ");
 	}
 	if (!line || line[0] == 0) {
 		if (stdin_dup > 0) {
@@ -148,18 +148,18 @@ MAC [0-9a-fA-F]+:[0-9a-fA-F]+:[0-9a-fA-F]+:[0-9a-fA-F]+:[0-9a-fA-F]+:[0-9a-fA-F]
 <INITIAL>"start"	return START;
 <INITIAL>"stop"		return STOP;
 <INITIAL>"enter"	return ENTER;
-<INITIAL>"quit"		return QUITS;
+<INITIAL>"quit"		return QUIT;
 <INITIAL>"save"		return SAVE;
 <INITIAL>"load"		return LOAD;
 
 <INITIAL>"dmac"			return DMAC;
 <INITIAL>"smac"			return SMAC;
-<INITIAL>"daddr"		return DIP;
-<INITIAL>"saddr"		return SIP;
+<INITIAL>"daddr"		return DADDR;
+<INITIAL>"saddr"		return SADDR;
 <INITIAL>"dport"		return DPORT;
 <INITIAL>"sport"		return SPORT;
-<INITIAL>"pkt-type"		return PKTT;
-<INITIAL>"interface"	return IFNAME;
+<INITIAL>"packet"		return PACKET;
+<INITIAL>"interface"	return INTERFACE;
 <INITIAL>"time"			return TIME;
 <INITIAL>"queue"		return QUEUE;
 <INITIAL>"core"			return CORE;

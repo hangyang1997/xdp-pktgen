@@ -6,12 +6,16 @@ CM_BEGIN
 #include <stdlib.h>
 #include <string.h>
 #include <memory.h>
+#include <readline/readline.h>
 #include <readline/history.h>
 #include "xlog.h"
 #include "xtask.h"
 #include "xutil.h"
 #include "keyword.h"
 #include "xconfig.h"
+
+#define CLI_MAX_TOKEN 16
+#define CLI_TOKEN_MAX_SIZE 0xff
 
 struct xtask *current_task;
 // static int command_error_token;
@@ -45,9 +49,9 @@ static void yyerror(const char *err_string) {
 	pkt_type_t ptt;
 }
 
-%token SET LIST START STOP CLEAN ENTER QUITS ALL SAVE LOAD
+%token SET LIST START STOP CLEAN ENTER QUIT ALL SAVE LOAD
 %token SPORT DPORT DMAC SMAC QUEUE
-%token SIP DIP IFNAME CORE PKTT TIME
+%token SADDR DADDR INTERFACE CORE PACKET TIME
 %token <text> TEXT
 %token <number> NUMBER IP
 %token <ru16> U16_RANGE
@@ -63,7 +67,7 @@ STAM : /*empty*/
 	| STAM STOP_STAM
 	| STAM CLEAN_STAM
 	| STAM SET_STAM
-	| STAM LSIT_STAM
+	| STAM LIST_STAM
 	| STAM ENTER_STAM
 	| STAM QUIT_STAM
 	| STAM SAVE_STAM
@@ -71,93 +75,93 @@ STAM : /*empty*/
 	| error { YYABORT; }
 	;
 
-START_STAM : START {
+START_STAM : CLI_DEFINE_2(START) {
 		UNSET_VIEW([[ xtask_start(0); ]])
 	}
-	| START TIME NUMBER {
+	| CLI_DEFINE_2(START TIME [NUMBER]) {
 		UNSET_VIEW([[ xtask_start($3); ]])
 	}
 	;
 
-STOP_STAM : STOP {
+STOP_STAM : CLI_DEFINE_2(STOP) {
 		UNSET_VIEW()
 	}
 	;
 
-SAVE_STAM : SAVE {
+SAVE_STAM : CLI_DEFINE_2(SAVE) {
 		UNSET_VIEW([[ L_ins_save(DEFAULT_XTASK_CONFIG_SAVE_FILE); ]])
 	}
-	| SAVE TEXT {
+	| CLI_DEFINE_2(SAVE [TEXT]) {
 		UNSET_VIEW([[ L_ins_save($2); ]])
 	}
 	;
 
-LOAD_STAM : LOAD {
+LOAD_STAM : CLI_DEFINE_2(LOAD) {
 		UNSET_VIEW([[ L_ins_load(DEFAULT_XTASK_CONFIG_SAVE_FILE); ]])
 	}
-	| LOAD TEXT {
+	| CLI_DEFINE_2(LOAD [TEXT]) {
 		UNSET_VIEW([[ L_ins_load($2); ]])
 	}
 	;
 
-CLEAN_STAM : CLEAN {
+CLEAN_STAM : CLI_DEFINE_1(CLEAN) {
 		SET_VIEW([[
 			xtask_remove(current_task);
 			current_task = NULL;
 		]])
 	}
-	| CLEAN ALL {
+	| CLI_DEFINE_2(CLEAN ALL) {
 		UNSET_VIEW([[xtask_cleanup();]])
 	}
-	| CLEAN IFNAME TEXT QUEUE NUMBER {
+	| CLI_DEFINE_2(CLEAN INTERFACE [TEXT] QUEUE [NUMBER]) {
 		UNSET_VIEW([[xtask_remove(xtask_lookup($3, $5));]])
 	}
 	;
 
-QUIT_STAM : QUITS {
+QUIT_STAM : CLI_DEFINE_3(QUIT) {
 		UNSET_VIEW([[exit(0);]],[[current_task = NULL;]])
 	}
 	;
 
-SET_STAM : SET SMAC MAC {
+SET_STAM : CLI_DEFINE_1(SET SMAC [MAC]) {
 		SET_VIEW([[
 			memcpy(current_task->smac, $3, sizeof(current_task->smac));
 			TASK_SET(current_task, TASK_F_SMAC);
 		]])
 	}
-	| SET DMAC MAC {
+	| CLI_DEFINE_1(SET DMAC [MAC]) {
 		SET_VIEW([[
 			memcpy(current_task->dmac, $3, sizeof(current_task->smac));
 			TASK_SET(current_task, TASK_F_DMAC);
 		]]);
 	}
-	| SET SIP IP_RANGE {
+	| CLI_DEFINE_1(SET SADDR [IP_RANGE]) {
 		SET_VIEW([[
 			current_task->src_begin = $3.begin;
 			current_task->src_end = $3.end;
 			TASK_SET(current_task, TASK_F_SRC);
 		]])
 	}
-	| SET SIP IP {
+	| CLI_DEFINE_1(SET SADDR [IP]) {
 		SET_VIEW([[
 			current_task->src_begin = $3;
 			current_task->src_end = $3;
 			TASK_SET(current_task, TASK_F_SRC);
 		]])
 	}
-	| SET DIP IP {
+	| CLI_DEFINE_1(SET DADDR [IP]) {
 		SET_VIEW([[
 			current_task->dest = $3;
 			TASK_SET(current_task, TASK_F_DST);
 		]])
 	}
-	| SET CORE NUMBER {
+	| CLI_DEFINE_1(SET CORE [NUMBER]) {
 		SET_VIEW([[
 			current_task->core_id = $3;
 			TASK_SET(current_task, TASK_F_CORE);
 		]])
 	}
-	| SET SPORT U16_RANGE {
+	| CLI_DEFINE_1(SET SPORT [U16_RANGE]) {
 		SET_VIEW([[
 			current_task->sport_begin = htons($3.begin);
 			current_task->sport_end = htons($3.end);
@@ -167,7 +171,7 @@ SET_STAM : SET SMAC MAC {
 			TASK_SET(current_task, TASK_F_SPORT);
 		]])
 	}
-	| SET SPORT NUMBER {
+	| CLI_DEFINE_1(SET SPORT [NUMBER]) {
 		SET_VIEW([[
 			__u16 x = (__u16)$3;
 			current_task->sport_begin = htons(x);
@@ -175,18 +179,18 @@ SET_STAM : SET SMAC MAC {
 			TASK_SET(current_task, TASK_F_SPORT);
 		]])
 	}
-	| SET DPORT NUMBER {
+	| CLI_DEFINE_1(SET DPORT [NUMBER]) {
 		SET_VIEW([[
 			current_task->dport = htons($3);
 			TASK_SET(current_task, TASK_F_DPORT);
 		]])
 	}
-	| SET PKTT PTTV {
+	| CLI_DEFINE_1(SET PACKET [PTTV]) {
 		SET_VIEW([[ current_task->pkt_type = $3;
 			TASK_SET(current_task, TASK_F_PKT_TYPE);
 		]])
 	}
-	| SET TIME NUMBER {
+	| CLI_DEFINE_1(SET TIME [NUMBER]) {
 		SET_VIEW([[
 			current_task->time = $3;
 			TASK_SET(current_task, TASK_F_TIME);
@@ -194,25 +198,115 @@ SET_STAM : SET SMAC MAC {
 	}
 	;
 
-LSIT_STAM : LIST {
+LIST_STAM : CLI_DEFINE_3(LIST) {
 		SET_VIEW([[ xtask_list (current_task); ]], [[xtask_list_outline();]])
 	}
 	;
 
-ENTER_STAM : ENTER IFNAME TEXT QUEUE NUMBER {
+ENTER_STAM : CLI_DEFINE_2(ENTER INTERFACE [TEXT] QUEUE [NUMBER]) {
 		SET_VIEW([[ LOG("already in task set view"); ]], [[current_task = xtask_get($3, $5);]])
 	}
 	;
 
 %%
 
+SET_CLI_TABLE();
+
+
+
+
 void Y_reset(void)
 {
+	
 	// command_error_token = 0;
+}
+
+static char *Y_command_fetch_all(void) 
+{
+	UNSET_VIEW([[
+		for (int i = 0; unset_command_table[i].command; ++i) {
+			puts(unset_command_table[i].command);
+		}
+		]],
+		[[
+		for (int i = 0; set_command_table[i].command; ++i) {
+			puts(set_command_table[i].command);
+		}
+		]])
+
+	return NULL;
+}
+
+static void Y_make_token(char *tokens)
+{
+	char *save;
+	char *token;
+	char * line;
+	int i = 0;
+
+	line = XSTRDUP(rl_line_buffer);
+
+	token = strtok_r(line, " ", &save);
+	while (token) {
+		strncpy(tokens + i * CLI_TOKEN_MAX_SIZE, token, CLI_TOKEN_MAX_SIZE-1);
+		i++;
+		token = strtok_r(NULL, " ", &save);
+	}
+	tokens[i * 0xff] = 0;
+
+	XFREE(line);
+}
+
+static int Y_command_match_token(char *tokens, int index)
+{
+	struct command_item *table;
+	UNSET_VIEW(table=unset_command_table;, table=set_command_table;)
+
+	puts("");
+	for (; table[index].command; ++index) {
+		for (int i = 0; tokens[i * CLI_TOKEN_MAX_SIZE] != 0; ++i) {
+			if (table[index].help[i] == NULL) {
+				goto next;
+			}
+			if (table[index].help[i][0] == '[') {
+				continue;
+			}
+			if (strncmp(tokens + i * CLI_TOKEN_MAX_SIZE, table[index].help[i], strlen(tokens + i * CLI_TOKEN_MAX_SIZE))) {
+				goto next;
+			}
+		}
+		puts(table[index].command);
+next:
+	}
+
+	rl_forced_update_display();
+
+	return 0;
+}
+
+static int Y_command_completion_match (int count, int key)
+{
+	int index;
+	char tokens[CLI_MAX_TOKEN * CLI_TOKEN_MAX_SIZE];
+
+	index = 0;
+	if (*rl_line_buffer == 0) {
+		puts("");
+		Y_command_fetch_all();
+		rl_forced_update_display();
+		return 0;
+	}
+	Y_make_token((char*)tokens);
+
+	return Y_command_match_token((char*)tokens, index);
 }
 
 int main(int argc, char **argv)
 {
+	rl_initialize();
+
+	rl_bind_key('\t', Y_command_completion_match);
+
 	while(1) {
 		if (yyparse() == 0 && current_line) {
 			add_history(current_line);
